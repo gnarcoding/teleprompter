@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Speech Teleprompter</title>
+<style>
+body{margin:0;font-family:system-ui,sans-serif;background:#111;color:#eee;display:flex;flex-direction:column;align-items:center;padding:20px;gap:14px}
+textarea{width:min(800px,95vw);height:140px;background:#222;color:#eee;border:1px solid #444;border-radius:8px;padding:10px;font-size:16px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;justify-content:center}
+button{font-size:18px;padding:10px 22px;border:0;border-radius:8px;cursor:pointer;background:#2a7;color:#fff}
+button.on{background:#c33}
+#display{width:min(1000px,95vw);min-height:180px;display:flex;align-items:center;justify-content:center;gap:.4em;font-size:clamp(36px,7vw,80px);font-weight:600;background:#000;border-radius:12px;padding:20px;flex-wrap:wrap}
+#display span{color:#777;transition:all .15s}
+#display span.done{color:#444}
+#display span.cur{color:#ffd400;text-shadow:0 0 12px #ffd40088}
+#status,#heard{color:#999;font-size:14px;text-align:center;max-width:800px}
+</style></head><body>
+<textarea id="script" placeholder="Paste your script here...">Welcome to the speech driven teleprompter. Start talking and the words on screen will follow along with you as you read.</textarea>
+<div class="row">
+ <button id="mic">Start mic</button>
+ <button id="reset" style="background:#555">Reset</button>
+ <label>Words shown <input id="win" type="number" min="2" max="8" value="4" style="width:50px"></label>
+</div>
+<div id="display"></div>
+<div id="status">Press Start mic and begin reading.</div>
+<div id="heard"></div>
+<script>
+const $=id=>document.getElementById(id);
+let words=[],norm=[],pos=0,committed=0,rec=null,listening=false;
+const clean=w=>w.toLowerCase().replace(/[^\p{L}\p{N}']/gu,'');
+function load(){words=$('script').value.split(/\s+/).filter(Boolean);norm=words.map(clean);pos=committed=0;render();}
+function render(){
+ const n=+$('win').value||4,start=Math.max(0,Math.min(pos-1,words.length-n)),d=$('display');d.innerHTML='';
+ if(pos>=words.length&&words.length){d.innerHTML='<span class="cur">— End —</span>';return;}
+ for(let i=start;i<Math.min(words.length,start+n);i++){const s=document.createElement('span');s.textContent=words[i];s.className=i<pos?'done':i===pos?'cur':'';d.appendChild(s);}
+}
+// Matching: fillers ignored; small skips allowed; bigger skips need 2 consecutive matches; repeats/restarts never move backward.
+const sim=(a,b)=>a===b||(a.length>3&&b.length>3&&a.slice(0,4)===b.slice(0,4));
+function advance(spoken,isFinal){
+ const ws=spoken.map(clean).filter(Boolean);
+ let p=committed;
+ for(let i=0;i<ws.length;i++){
+  const w=ws[i];
+  if(p<norm.length&&sim(norm[p],w)){p++;continue;}
+  let hit=-1;
+  for(let k=1;k<5&&p+k<norm.length;k++){
+   if(sim(norm[p+k],w)){
+    // skipping 1 word is fine; skipping more needs the next spoken word to confirm
+    if(k===1||(ws[i+1]&&p+k+1<norm.length&&sim(norm[p+k+1],ws[i+1]))){hit=p+k;}
+    break;}
+  }
+  if(hit>=0)p=hit+1; // else: filler, restart, or misheard -> hold position
+ }
+ while(p<norm.length&&!norm[p])p++;
+ // interim results can shrink/change; never move backward, cap jump per update
+ p=Math.min(p,pos+6);
+ if(p>pos){pos=p;lastMove=Date.now();}
+ if(isFinal)committed=pos;
+ render();
+}
+let lastMove=Date.now();
+setInterval(()=>{if(listening)$('status').textContent=Date.now()-lastMove>2500?'Paused — holding on current word':'Listening…';},500);
+$('mic').onclick=()=>{
+ const SR=window.SpeechRecognition||window.webkitSpeechRecognition;
+ if(!window.isSecureContext){$('status').textContent='The mic needs an https:// page. Host this file over HTTPS to use voice.';return;}
+ if(!SR){$('status').textContent='Voice tracking isn’t available in this browser. Tap the words or use the arrow keys to advance.';return;}
+ if(listening){listening=false;rec&&rec.stop();return;}
+ if(!words.length||pos>=words.length)load();
+ rec=new SR();rec.continuous=true;rec.interimResults=true;rec.lang='en-US';
+ rec.onresult=e=>{
+  for(let i=e.resultIndex;i<e.results.length;i++){
+   const r=e.results[i],txt=r[0].transcript;$('heard').textContent='Heard: '+txt;
+   advance(txt.split(/\s+/),r.isFinal);
+   }
+ };
+ rec.onerror=e=>$('status').textContent='Mic error: '+e.error;
+ rec.onend=()=>{committed=pos;if(listening){try{rec.start()}catch(e){setTimeout(()=>rec.start(),300)}return;}else{$('mic').textContent='Start mic';$('mic').classList.remove('on');$('status').textContent='Stopped.';}};
+ rec.start();listening=true;$('mic').textContent='Stop mic';$('mic').classList.add('on');$('status').textContent='Listening…';
+};
+// Manual fallback: tap right half to advance, left half to go back; arrow keys too
+const step=d=>{pos=Math.max(0,Math.min(words.length,pos+d));committed=pos;lastMove=Date.now();render();};
+$('display').onclick=e=>{const r=$('display').getBoundingClientRect();step(e.clientX-r.left>r.width/2?1:-1);};
+document.addEventListener('keydown',e=>{if(e.target.tagName==='TEXTAREA')return;if(e.key==='ArrowRight'||e.key===' '){e.preventDefault();step(1);}if(e.key==='ArrowLeft')step(-1);});
+if(!(window.SpeechRecognition||window.webkitSpeechRecognition))$('status').textContent='Voice tracking isn’t available here. Tap the words or use the arrow keys to advance.';
+$('reset').onclick=load;$('script').oninput=load;$('win').oninput=render;
+load();
+</script></body></html>
